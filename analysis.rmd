@@ -1,0 +1,630 @@
+---
+title: "results"
+output: html_notebook
+---
+```{r include=FALSE}
+set.seed(1)
+library(brms) 
+library(patchwork)
+library(tidyverse)
+library(tidybayes)
+library(bayesplot)
+library(RColorBrewer)
+library(knitr) 
+library(kableExtra)
+library(scales)
+library(scatterpie)
+library(here)
+knitr::opts_chunk$set(fig.path='figures/')
+blues <- brewer.pal(9, "Blues")[3:9] 
+greens <- brewer.pal(9, "Greens")[3:9] 
+oranges <- brewer.pal(9, "Oranges")[3:9] 
+clrs <- RColorBrewer::brewer.pal(8, "Set1")
+
+custom_theme <- theme_bw() +
+  theme(
+    text = element_text(size = 20), 
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+   # legend.position = "none", 
+#    axis.title.x = element_blank(),
+#    axis.title.y = element_blank(),
+    panel.border = element_blank(),             # Remove all borders
+    axis.line.x = element_line(color = "black", size = 0.5),  # Add bottom border
+    axis.line.y = element_line(color = "black", size = 0.5),  # Add left border
+  )
+
+# Apply the custom theme globally
+theme_set(custom_theme)
+```
+# Study 1
+```{r}
+m_1_plus <- readRDS("saves/study1/s1-age-domain_ID_age-domain_Sce_age-domain.rds")
+m_1_interaction <- readRDS("saves/study1/s1-age-x-domain_ID_age-domain_Sce_age-domain.rds")
+m_1_cap_null <- readRDS("saves/study1/s1-age_ID_age_Sce_age.rds")
+
+loo_compare(m1_interaction, m_1_cap_null)
+loo_compare(m_1_plus, m_1_cap_null)  # capacity vs. no capacity 
+loo_compare(m_1_plus, m1_interaction)  # capacity as interaction vs. as main
+
+m_1 <- m_1_interaction
+print(m_1$formula)
+
+pred_m1 <- predict(m_1) %>%
+  as_tibble() %>%
+  bind_cols(m_1$data)
+
+newdata <- distinct(m_1$data, age_factor, domain) 
+fitted_m1 <- fitted(m_1, re_formula = NA, newdata=newdata)%>%
+  as_tibble() %>%
+  bind_cols(newdata)
+
+post_draws_m1<- posterior_predict(m_1, draws = 200) %>%
+  as_tibble()
+```
+### general average
+People are estimated more likely to commit wrongdoing as the story describes estimate that at younger ages.
+```{r}
+df <- m_1$data
+p1 <- fitted_m1 %>% 
+  ggplot(aes(x = age_factor, y = Estimate, group=domain)) +
+  geom_point(data=df, aes(x = age_factor, y=r1, color=domain), alpha=0.2, size=1, position=position_dodge(width=0.4)) +
+  geom_line(aes(color=domain), size=2, alpha=0.8) + 
+  scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "Control type") +
+  ylab("Expectation") + xlab("Age") +
+  scale_y_continuous(limits = c(0, 1), breaks = c(seq(0, 1, 0.2)), labels = c(seq(0, 100, 20))) +
+  theme_bw() +
+  theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  guides(fill = guide_legend(title = NULL))
+
+ggsave("saves/figures/r1.pdf", width = 8, height = 5)
+p1
+```
+### domain average
+```{r}
+age_levels_s1 <- unique(m_1$data$age_factor)
+domain_levels <- unique(m_1$data$domain)
+
+# >
+hypothesis_results_age2 <- hypothesis(m_1, c("domaininhibit = domaintom", # + Intercepts on both sides
+                    "domaininhibit = domainplan",
+                    "domaininhibit = 0", # compare to Intercept (age 2 domain motor)
+                    "domaininhibit = domainmoral", 
+                    "domaintom = 0",  
+                    "domaintom = domainplan",
+                    "domaintom = domainmoral",
+                    "domainplan = 0",
+                    "domainplan = domainmoral",
+                    "domainmoral = 0"
+                    ))
+
+hypothesis_results <- list()
+for (age in age_levels_s1[2:11]) {
+  hypothesis_expressions <- c(
+    paste0("age_factor", age, ":domaininhibit + domaininhibit = age_factor", age, ":domaintom + domaintom"),
+    paste0("age_factor", age, ":domaininhibit + domaininhibit = age_factor", age, ":domainplan + domainplan"),
+    paste0("age_factor", age, ":domaininhibit + domaininhibit = 0"),
+    paste0("age_factor", age, ":domaininhibit + domaininhibit = age_factor", age, ":domainmoral + domainmoral"),
+    paste0("age_factor", age, ":domaintom + domaintom = 0"),
+    paste0("age_factor", age, ":domaintom + domaintom = age_factor", age, ":domainplan + domainplan"),
+    paste0("age_factor", age, ":domaintom + domaintom = age_factor", age, ":domainmoral + domainmoral"),
+    paste0("age_factor", age, ":domainplan + domainplan = 0"),
+    paste0("age_factor", age, ":domainplan + domainplan = age_factor", age, ":domainmoral + domainmoral"),
+    paste0("age_factor", age, ":domainmoral + domainmoral = 0")
+  )
+  hypothesis_result <- hypothesis(m_1, hypothesis_expressions)
+  hypothesis_results[[paste0("age", age)]] <- hypothesis_result
+}
+
+create_hypothesis_domain_age <- function(age_levels, domain_levels, sign){
+  # non-base-level domains
+  hyp = c()
+  for (d in array(domain_levels[2:5])){
+    hyp = c(hyp, paste0("domain", d, sign, "age_factor", age_levels[2], ":domain", d, "+ age_factor", age_levels[2])) # age 2
+    for (i in 2:(length(age_levels) - 1)) {
+      age_start <- age_levels[i] 
+      age_end <- age_levels[i + 1]
+      hyp = c(hyp, paste0("age_factor",age_start, ":domain", d, "+ age_factor", age_start, sign, " age_factor",age_end, ":domain", d, "+ age_factor", age_end))
+    }
+  }
+  # base-level domain
+  hyp = c(hyp, paste0("0", sign, "age_factor", age_levels[2])) # age 2
+  for (i in 2:(length(age_levels) - 1)) {
+      age_start <- age_levels[i] 
+      age_end <- age_levels[i + 1]
+      hyp = c(hyp, paste0("age_factor", age_start, sign, "age_factor", age_end))
+  }
+  
+  return(hyp)
+}
+
+print_table <- function(hypothesis_results){
+  tab = hypothesis_results$hypothesis %>% 
+    mutate(across(where(is.numeric), ~comma(., accuracy=0.01))) %>% 
+    rename_all(~gsub("\\.", " ", .))
+  a = map_chr(tab, ~ifelse(class(.x)=="numeric", "r","l"))
+  tab %>% 
+    kbl(caption= "Model results with kable", align=a) %>% 
+    kable_styling(full_width=FALSE, 
+                  bootstrap_options = c("striped", "hover", "condensed"))
+}
+
+hyp <- create_hypothesis_domain_age(age_levels_s1, domain_levels, ">")
+hypothesis_results_ages <- hypothesis(m_1, hyp)
+print_table(hypothesis_results_ages)
+
+teen_adult_hypothesis <- hypothesis(m_1, c('age_factor16 > age_factor30', 'age_factor16:domaininhibit+ age_factor16> age_factor30:domaininhibit+ age_factor30', 'age_factor16:domainplan+ age_factor16> age_factor30:domainplan+ age_factor30', 'age_factor16:domaintom+ age_factor16> age_factor30:domaintom+ age_factor30', 'age_factor16:domainmoral+ age_factor16> age_factor30:domainmoral+ age_factor30'))
+
+print_table(teen_adult_hypothesis)
+
+```
+
+### variation
+The beliefs are most diverse for the youngest age, and monotonically decreases over the character’s age. 
+```{r}
+df <- m_1$data
+df %>%
+  group_by(age_factor) %>%
+  summarise(std = sd(r1))
+```
+### compare growth statistics 
+Which age grows fastest 
+```{r}
+calculate_stat_change_rates <- function(samples, model){
+  df <- model$data
+  age_levels <- unique(df$age_factor)
+  domain_levels <- unique(df$domain)
+  
+  calculate_change_rates <- function(posterior_samples, age_levels, domain) {
+    change_rates <- data.frame()
+    for (i in 1:(length(age_levels) - 1)) {
+      age_start <- age_levels[i] 
+      age_end <- age_levels[i + 1]
+      if (age_start != "2" && domain !="motor"){
+      change_rate <- ( posterior_samples[[paste0("b_age_factor", age_end)]] 
+                       + posterior_samples[[paste0("b_age_factor", age_end, ":domain", domain)]] 
+                       - posterior_samples[[paste0("b_age_factor", age_start)]]
+                       - posterior_samples[[paste0("b_age_factor", age_start, ":domain", domain)]]
+                     ) 
+      }
+      else if (age_start == "2" && domain!="motor"){
+        change_rate <- posterior_samples[["b_age_factor4"]] + posterior_samples[[paste0("b_age_factor4:domain", domain)]] 
+      }
+      else if (age_start == "2" && domain=="motor"){
+        change_rate <- posterior_samples[["b_age_factor4"]] 
+      }
+     else if (age_start != "2" && domain=="motor"){
+        change_rate <- posterior_samples[[paste0("b_age_factor", age_end)]] - posterior_samples[[paste0("b_age_factor", age_start)]]
+      }
+     else { print(".")}
+      
+     change_rates <- rbind(change_rates, data.frame(sample = 1:nrow(posterior_samples), age_start = age_start, age_end = age_end, change_rate = change_rate))
+    }
+    return(change_rates)
+  }
+  
+  domain_change_rates <- lapply(domain_levels, function(domain) {
+    calculate_change_rates(samples, age_levels, domain)
+  })
+  names(domain_change_rates) <- domain_levels
+  
+  stat_change_rates <- map_dfr(domain_levels, function(domain) {
+    domain_change_rates[[domain]] %>%
+      group_by(sample) %>%
+      summarise(avg_change_rate = mean(change_rate), 
+                var_change_rate = var(change_rate, na.rm = TRUE),
+                range_change_rate = max(change_rate) - min(change_rate),
+                whichmax = which.max(change_rate),
+                max_abs_growth = max(change_rate),
+                age_max_growth = as.numeric(age_start[which.max(abs(change_rate))]),
+                check_age_growth= change_rate[age_start==age_start[which.max(abs(change_rate))]]) %>%
+      mutate(domain = domain)
+  })
+ 
+  return(stat_change_rates)
+}
+
+plot_age_max_change <- function(stat_change_rates, age_levels){
+  p <- ggplot(stat_change_rates, aes(x = age_max_growth, fill = domain)) +
+    geom_bar(position = "dodge") +
+    scale_fill_brewer(palette = "Set1") +
+    scale_x_discrete(labels = age_levels) +
+    labs(#title = "Distributions of Age of Max Growth",
+         x = "Age of Maximal Change",
+         y = "Count",
+         fill = "Domain") +
+    theme_bw() +
+    theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    facet_wrap(~domain, ncol = 1) + 
+    guides(color = guide_legend(title = NULL))
+  
+  return(p)
+}
+
+posterior_samples_m1 <- as_draws_df(m_1)
+stat_change_rates_m1 <- calculate_stat_change_rates(posterior_samples_m1, m_1)
+
+plot_age_max_change(stat_change_rates_m1, age_levels_s1) 
+ggsave("figures/m1-age-max-growth.pdf", width = 10, height = 6)
+
+```
+
+### combined figure
+```{r}
+age_levels_s1 <- unique(m_1$data$age_factor)
+domain_levels <- unique(m_1$data$domain)
+
+newdata <- distinct(m_1$data, age_factor, domain) 
+fitted_m1 <- fitted(m_1, re_formula = NA, newdata=newdata)%>%
+  as_tibble() %>%
+  bind_cols(newdata)
+
+df <- m_1$data
+
+posterior_samples_m1 <- as_draws_df(m_1)
+stat_change_rates_m1 <- calculate_stat_change_rates(posterior_samples_m1, m_1)
+
+stat_change_rates_m1 <- stat_change_rates_m1 %>%
+    group_by(domain, age_max_growth) %>%
+    summarise(count = n()) %>%
+    mutate(proportion = count / sum(count))
+  
+p1 <- fitted_m1 %>% 
+  ggplot(aes(x = age_factor, y = Estimate, group=domain)) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, group=domain, fill=domain), alpha=0.1) + 
+  geom_point(data=df, aes(x = age_factor, y=r1, color=domain), alpha=0.2, size=1, position=position_dodge(width=0.4)) +
+  geom_line(aes(color=domain), size=2, alpha=0.8) + 
+  scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "") +
+  scale_fill_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), guide = "none") +  
+  ylab("Expected likelihood") + xlab("Age") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), labels = scales::percent) +
+  guides(fill = "none", color = guide_legend(title = NULL))  # Explicitly remove fill guide
+
+p2 <- ggplot(stat_change_rates_m1, aes(x = age_levels_s1[age_max_growth], y=proportion, fill = domain, color=domain)) +
+    geom_bar(position = "dodge", stat = "identity", alpha=0.6) +
+    scale_fill_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), guide='none') +  
+    scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name="", guide='none') +
+    scale_x_discrete(labels = age_levels_s1) +
+    scale_y_continuous(breaks = seq(0, 1, 0.2), labels = scales::percent) + 
+    labs(x = "Age of maximal change", y = "% posterior draws") +
+    facet_wrap(~domain, ncol = 1) + 
+    theme(
+      strip.background = element_blank(),
+      strip.text.x = element_blank(),
+      legend.position = "none"  # This ensures no legend appears
+    )
+
+combined_plot <- p1 + p2 + plot_layout(guides = "collect", widths=c(2,1)) & 
+  theme(legend.position = 'bottom')  # Only color legend should be collected
+
+print(combined_plot)
+
+ggsave("figures/m1-combine.pdf", width = 12, height = 6)
+```
+# Study 2
+### Information criteria
+```{r}
+m_2_interaction <- readRDS(here("saves/study2/s2-age-x-domain_ID_age-domain_Sce_age-domain.rds"))
+print(m_2$formula)
+m_2_null <- readRDS("saves/study2/s2-age_ID_age_Sce_age.rds")
+print(m_2_null$formula)
+m_2_plus <- readRDS("saves/study2/s2-age-domain_ID_age-domain_Sce_age-domain.rds")
+df_2 <- m_2$data
+
+loo_compare(m_2, m_2_interaction)
+
+m_2 <- m_2_plus
+m_2 <- m_2_interaction  # for comparison with study 1 use this model to make figure
+```
+### domain average, significant differences
+```{r}
+hyp <- create_hypothesis_domain_age(age_levels_s1, domain_levels, "<")
+hypothesis(m_2, hyp)
+```
+### combined figure
+```{r}
+newdata <- distinct(m2_plus$data, age_factor, domain)
+fitted_m2 <- fitted(m2_plus, re_formula = NA, newdata=newdata)%>%
+  as_tibble() %>%
+  bind_cols(newdata)
+
+posterior_samples_m2 <- as_draws_df(m2_plus)
+stat_change_rates_m2 <- calculate_stat_change_rates(posterior_samples_m2, m_2)
+
+stat_change_rates_m2 <- stat_change_rates_m2 %>%
+    group_by(domain, age_max_growth) %>%
+    summarise(count = n()) %>%
+    mutate(proportion = count / sum(count))
+
+df_2 <- m_2$data
+p1 <- fitted_m2 %>% 
+  ggplot(aes(x = age_factor, y = Estimate, group=domain)) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, group=domain, fill=domain), alpha=0.1) + 
+  geom_point(data=df_2, aes(x = age_factor, y=r2, color=domain), alpha=0.2, size=1, position=position_dodge(width=0.4)) +
+  geom_line(aes(color=domain), size=2, alpha=0.8) + 
+  scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "") +
+  scale_fill_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), guide = "none") +
+  ylab("Responsibility") + xlab("Age") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), labels = scales::percent)
+
+p2 <- ggplot(stat_change_rates_m2, aes(x = age_levels_s1[age_max_growth], y=proportion, color = domain, fill=domain)) +
+    geom_bar(position = "dodge", stat = "identity", alpha=0.6) +
+    scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "Control type", guide='none') +
+    scale_fill_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "Control type", guide = 'none') +
+    scale_x_discrete(labels = age_levels_s1) +
+    scale_y_continuous(breaks = seq(0, 1, 0.2), labels = scales::percent) + 
+    labs(x = "Age of Maximal Change",
+         y = "% posterior draws",
+         fill = "Control type") +
+    # run customized theme in beginning instead
+    facet_wrap(~domain, ncol = 1) + 
+    theme(
+      strip.background = element_blank(),
+      strip.text.x = element_blank(),
+      legend.position = "right"
+    )
+
+combined_plot <- p1 + p2 + plot_layout(guides = "collect", widths=c(2,1)) & theme(legend.position = 'bottom') 
+print(combined_plot)
+
+ggsave("figures/m2-combine.pdf", width = 12, height = 6)
+```
+### variation
+```{r}
+df <- m_2$data
+df %>%
+  group_by(age_factor) %>%
+  summarise(std = sd(r2))
+```
+
+# Study 3
+```{r}
+m_3 <- readRDS("saves/study3/s3-age-x-r1_ID_age-r1_Domain_age-x-r1_Sce_age-r1.rds")
+
+m3r1 <- readRDS("saves/study3/s3-r1-separate-age-x-domain_ID_age-domain_Sce_age-domain.rds")
+m3r2 <- readRDS("saves/study3/s3-r2-separate-age-x-domain_ID_age-domain_Sce_age-domain.rds")
+
+age_levels_s3 <- unique(m_3$data$age_factor)
+domain_levels <- unique(m_3$data$domain)
+
+df <- m_3$data %>%
+  mutate(r1 = (r1_scale * attr(m_3$data$r1_scale, "scaled:scale") + attr(m_3$data$r1_scale, "scaled:center") ) )
+
+post_m3 <- predict(m_3) %>%
+  as_tibble() %>%
+  bind_cols(m_3$data) 
+
+newdata <- crossing(distinct(m3r1$data, age_factor, domain))
+fitted_m3r1 <- fitted(m3r1, re_formula = NA, newdata=newdata) %>% as_tibble() %>% bind_cols(newdata)
+
+newdata <- crossing(distinct(m3r2$data, age_factor, domain))
+fitted_m3r2 <- fitted(m3r2, re_formula = NA, newdata=newdata) %>% as_tibble() %>% bind_cols(newdata)
+
+newdata <- crossing(r1_scale = c(-1, 0, 1), age_factor = age_levels_s3)
+fitted_m3r1r2 <- fitted(m_3, re_formula = NA, newdata=newdata)%>% as_tibble() %>% bind_cols(newdata)
+```
+
+### plot figure
+```{r}
+p0 <- fitted_m3r1r2 %>%
+  ggplot(aes(x = age_factor, y = Estimate)) +
+  # geom_point(aes(y=Estimate, color=factor(r1_scale)),size=2, position=position_dodge(width=0.6)) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, group=r1_scale, fill=factor(r1_scale)), alpha=0.1) + 
+  geom_path(aes(group=r1_scale, color= factor(r1_scale)), size=2) +
+  scale_fill_manual(values = c(blues[3], blues[5], blues[7]), guide = "none") +
+  scale_colour_manual(values = c(blues[3], blues[5], blues[7]), labels=c("Lower likelihood", "Average", "Higher likelihood"), name = "") +
+  ylab("Responsibility") + xlab("Age") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), labels = scales::percent)
+
+p1 <- fitted_m3r1 %>% 
+  ggplot(aes(x = age_factor, y = Estimate, group=domain)) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, group=domain, fill=domain), alpha=0.1) + 
+  #geom_point(data= m3r1$data, aes(x = age_factor, y=r1_01, color=domain), alpha=0.1, size=0.5, position=position_dodge(width=0.4)) +
+  geom_line(aes(color=domain), size=1, alpha=0.8) + 
+  scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "") +
+  scale_fill_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), guide = "none") +  
+  ylab("Expected likelihood") + xlab("Age") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), labels = scales::percent) +
+  guides(fill = "none", color = guide_legend(nrow = 3,title = NULL)) +
+  theme(text = element_text(size = 15))
+
+p2 <- fitted_m3r2 %>% 
+  ggplot(aes(x = age_factor, y = Estimate, group=domain)) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, group=domain, fill=domain), alpha=0.1) + 
+  #geom_point(data= m3r2$data, aes(x = age_factor, y=r2, color=domain), alpha=0.1, size=0.5, position=position_dodge(width=0.4)) +
+  geom_line(aes(color=domain), size=1, alpha=0.8) + 
+  scale_color_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), name = "") +
+  scale_fill_brewer(palette = "Set1", labels = c("Motor control", "Inhibitory control", "Planning", "ToM", "Moral competence"), guide = "none") +
+  ylab("Responsibility") + xlab("Age") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2), labels = scales::percent) +
+  guides(fill = "none", color = guide_legend(nrow = 3, title = NULL)) +
+  theme(text = element_text(size = 15))
+
+
+r3fig <- p0 + (p1 / p2) + plot_layout(widths=c(2,1), guides = "collect") & theme(legend.position = 'bottom') 
+
+print(r3fig)
+
+ggsave("figures/m3-combine.pdf", r3fig, width = 12, height = 6)
+
+```
+
+### replicate distribution of age of maximal change
+```{r}
+# age category differ from s1 and s2
+calculate_stat_change_rates_s3 <- function(samples, model){
+  df <- model$data
+  age_levels <- unique(df$age_factor)
+  domain_levels <- unique(df$domain)
+  
+  calculate_change_rates <- function(posterior_samples, age_levels, domain) {
+    change_rates <- data.frame()
+    for (i in 1:(length(age_levels) - 1)) {
+      age_start <- age_levels[i] 
+      age_end <- age_levels[i + 1]
+      if (age_start != "2" && domain !="motor"){
+      change_rate <- ( posterior_samples[[paste0("b_age_factor", age_end)]] 
+                       + posterior_samples[[paste0("b_age_factor", age_end, ":domain", domain)]] 
+                       - posterior_samples[[paste0("b_age_factor", age_start)]]
+                       - posterior_samples[[paste0("b_age_factor", age_start, ":domain", domain)]]
+                     ) 
+      }
+      else if (age_start == "2" && domain!="motor"){
+        change_rate <- posterior_samples[["b_age_factor5"]] + posterior_samples[[paste0("b_age_factor5:domain", domain)]] 
+      }
+      else if (age_start == "2" && domain=="motor"){
+        change_rate <- posterior_samples[["b_age_factor5"]] 
+      }
+     else if (age_start != "2" && domain=="motor"){
+        change_rate <- posterior_samples[[paste0("b_age_factor", age_end)]] - posterior_samples[[paste0("b_age_factor", age_start)]]
+      }
+     else { print("there is NA")
+      }
+      
+     change_rates <- rbind(change_rates, data.frame(sample = 1:nrow(posterior_samples), age_start = age_start, age_end = age_end, change_rate = change_rate))
+    }
+    return(change_rates)
+  }
+  
+  domain_change_rates <- lapply(domain_levels, function(domain) {
+    calculate_change_rates(samples, age_levels, domain)
+  })
+  names(domain_change_rates) <- domain_levels
+  
+  stat_change_rates <- map_dfr(domain_levels, function(domain) {
+    domain_change_rates[[domain]] %>%
+      group_by(sample) %>%
+      summarise(avg_change_rate = mean(change_rate), 
+                var_change_rate = var(change_rate, na.rm = TRUE),
+                range_change_rate = max(change_rate) - min(change_rate),
+                whichmax = which.max(change_rate),
+                max_abs_growth = max(change_rate),
+                age_max_growth = as.numeric(age_start[which.max(abs(change_rate))]),
+                check_age_growth= change_rate[age_start==age_start[which.max(abs(change_rate))]]) %>%
+      mutate(domain = domain)
+  })
+ 
+  return(stat_change_rates)
+}
+
+posterior_samples_m3r1 <- as_draws_df(m3r1)
+stat_change_rates_m3r1 <- calculate_stat_change_rates_s3(posterior_samples_m3r1, m3r1)
+plot_age_max_change(stat_change_rates_m3r1, age_levels_s3) 
+
+ggsave("figures/m3r1-age-max-growth.pdf", width = 10, height = 6)
+
+posterior_samples_m3r2 <- as_draws_df(m3r2)
+stat_change_rates_m3r2 <- calculate_stat_change_rates_s3(posterior_samples_m3r2, m3r2)
+plot_age_max_change(stat_change_rates_m3r2, age_levels_s3)
+ggsave("figures/m3r2-age-max-growth.pdf", width = 10, height = 6)
+```
+
+## domain average, significant differences
+```{r}
+age_levels_s3 <- unique(m3r1$data$age_factor)
+
+hyp_m3r1 <- create_hypothesis_domain_age(age_levels_s3, domain_levels, ">")
+hypothesis_results <- hypothesis(m3r1, hyp_m3r1)
+print(hypothesis_results$hypothesis)
+write.csv(hypothesis_results$hypothesis, "saves/study3/s3r1-hypothesis-contrast-domain.csv", row.names = FALSE)
+
+hyp_m3r2 <- create_hypothesis_domain_age(age_levels_s3, domain_levels, "<")
+hypothesis_results <- hypothesis(m3r2, hyp_m3r2)
+print(hypothesis_results$hypothesis)
+write.csv(hypothesis_results$hypothesis, "saves/study3/s3r2-hypothesis-contrast-domain.csv", row.names = FALSE)
+
+hypothesis(m_3, "r1_scale + age_factor5:r1_scale = 0")
+hypothesis(m_3, "r1_scale + age_factor8:r1_scale = 0")
+hypothesis(m_3, "r1_scale + age_factor11:r1_scale = 0")
+hypothesis(m_3, "r1_scale + age_factor14:r1_scale = 0")
+hypothesis(m_3, "r1_scale + age_factor17:r1_scale = 0")
+hypothesis(m_3, "r1_scale + age_factor40:r1_scale = 0")
+```
+## variation
+```{r}
+m_3$data %>%
+  group_by(age_factor, domain) %>%
+  summarise(std = sd(r1_scale))
+
+m_3$data %>%
+  group_by(age_factor, domain) %>%
+  summarise(std = sd(r2))
+```
+## Raw data
+```{r}
+ggplot(df, aes(x = r1_scale, y = r2, color = age_factor)) +
+  geom_point(alpha = 0.3,size=1) +  # Add raw data points with some transparency
+  geom_smooth(method = "lm", se = FALSE) +  # Overlay linear fits
+  facet_wrap(~ age_factor, scales = "free_y") +  # One plot per age group
+  labs(
+    title = "Raw Relationship Between r1_scale and r2",
+    x = "r1_scale",
+    y = "r2",
+    color = "Age Factor"
+  ) +
+  theme_minimal()
+```
+
+# Model diagnostics
+```{r}
+
+m1_residual <- m_1$data %>%
+  add_residual_draws(m_1, ndraws=10) 
+
+m1_residual %>%
+  median_qi() %>%
+  ggplot(aes(sample = .residual)) +
+  geom_qq() +
+  geom_qq_line() +
+  ylab("theoretical") + xlab("samples")
+
+ggsave("figures/diagnostic-m1.pdf", width = 8, height = 4)
+
+pp_check(m_1)
+
+m2_residual <- m_2$data %>%
+  add_residual_draws(m_2, ndraws=10) 
+
+m2_residual %>%
+  median_qi() %>%
+  ggplot(aes(sample = .residual)) +
+  geom_qq() +
+  geom_qq_line() +
+  ylab("theoretical") + xlab("samples")
+ggsave("figures/diagnostic-m2.pdf", width = 8, height = 4)
+
+m3_residual <- m_3$data %>%
+  add_residual_draws(m_3, ndraws=10) 
+m_3$data %>%
+  filter(age_factor==2) %>%
+  ggplot(aes(x = r1_scale_r, y= r2)) +
+  geom_point(alpha=0.2) + 
+  ylab("r2") + xlab("r1")
+
+m3_residual %>%
+  ggplot(aes(sample = .residual)) +
+  geom_qq() +
+  geom_qq_line() +
+  ylab("theoretical") + xlab("samples")
+
+ggsave("figures/diagnostic-m3.pdf", width = 8, height = 4)
+```
+
+# Demographics
+```{r}
+demographic <- read_csv("results/s1-demographic.csv")
+demographic <- read_csv("results/s2-demographic.csv")
+demographic <- read_csv("results/s3-demographic.csv")
+
+demographic %>% 
+  filter(Status=="APPROVED", Age != "CONSENT_REVOKED") %>%
+  mutate(Age = as.numeric(Age)) %>%
+  summarize(mean_age = mean(Age),
+            median_age = median(Age),
+            max_age = max(Age),
+            min_age = min(Age))
+demographic %>% 
+  filter(Status=="APPROVED", Age != "CONSENT_REVOKED") %>%
+  count(`Ethnicity simplified`)
+```
+
